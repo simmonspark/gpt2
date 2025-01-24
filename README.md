@@ -8,3 +8,4 @@
 
 코드의 generate부분 약 20줄을 제외하고 gpt의 도움 없이 gpt 구현하기 프로젝트
 
+hugging face 의 모델을 분석한 후 직접 구현해서 weight까지 로딩
