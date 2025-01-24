@@ -1,219 +1,348 @@
 import math
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 
 class NewGELU(nn.Module):
-
     def forward(self, x):
-        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+        return 0.5 * x * (1.0 + torch.tanh(
+            math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))
+        ))
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self):
-        super(CausalSelfAttention, self).__init__()
-        self.c_attn = nn.Linear(768, 3 * 768)
-        self.c_proj = nn.Linear(768, 768)
-        self.drop = nn.Dropout(0.1)
-        self.res_drop = nn.Dropout(0.1)
-        self.register_buffer('logical_mask', torch.tril(torch.ones(1024).unsqueeze(0)).view(1, 1, 1024, 1))
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.attn_dropout = nn.Dropout(config.attn_pdrop)
+        self.resid_dropout = nn.Dropout(config.resid_pdrop)
+        self.register_buffer(
+            "bias",
+            torch.tril(torch.ones(config.block_size, config.block_size))
+            .view(1, 1, config.block_size, config.block_size)
+        )
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
 
-    def forward(self, tu):
-        x = tu[0]
-        pad_mask = tu[1]
-        B, N, C = x.shape
-        q, k, v = self.c_attn(x).chunk(3, dim=-1)
-        k = k.view(B, N, 12, C // 12).transpose(1, 2)
-        q = q.view(B, N, 12, C // 12).transpose(1, 2)
-        v = v.view(B, N, 12, C // 12).transpose(1, 2)
-        att = (q @ k.transpose(2, 3)) * (1.0 / math.sqrt(k.size(-1)))
-        att.masked_fill(self.logical_mask == 0, float('-inf'))
-
-        if pad_mask is not None:
-            pad_mask = pad_mask.view(B,1,N,1)
-            att = att.masked_fill(pad_mask == 0, float('-inf'))
-
+    def forward(self, x):
+        B, T, C = x.size()
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
-        att = att @ v
-        att = att.transpose(1, 2).contiguous().view(B, N, C)
-        att = self.res_drop(self.c_proj(att))
-        return att
+        att = self.attn_dropout(att)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = self.resid_dropout(self.c_proj(y))
+        return y
 
 
 class Block(nn.Module):
-    def __init__(self):
-        super(Block, self).__init__()
-        self.ln_1 = nn.LayerNorm(768)
-        self.ln_2 = nn.LayerNorm(768)
-        self.attn = CausalSelfAttention()
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = nn.ModuleDict(dict(
-            c_fc=nn.Linear(768, 4 * 768),
-            c_proj=nn.Linear(4 * 768, 768),
+            c_fc=nn.Linear(config.n_embd, 4 * config.n_embd),
+            c_proj=nn.Linear(4 * config.n_embd, config.n_embd),
             act=NewGELU(),
-            dropout=nn.Dropout(0.1),
+            dropout=nn.Dropout(config.resid_pdrop),
         ))
         m = self.mlp
         self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x))))
 
     def forward(self, x):
-        idx = x[0]
-        pad_mask = x[1]
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlpf(self.ln_2(x))
+        return x
 
-        idx = idx + self.attn((self.ln_1(idx), pad_mask))
-        idx = idx + self.mlpf(self.ln_2(idx))
-        return idx
+
+import os
+import sys
+import json
+import random
+from ast import literal_eval
+
+import numpy as np
+import torch
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def setup_logging(config):
+    """ monotonous bookkeeping """
+    work_dir = config.system.work_dir
+    # create the work directory if it doesn't already exist
+    os.makedirs(work_dir, exist_ok=True)
+    # log the args (if any)
+    with open(os.path.join(work_dir, 'args.txt'), 'w') as f:
+        f.write(' '.join(sys.argv))
+    # log the config itself
+    with open(os.path.join(work_dir, 'config.json'), 'w') as f:
+        f.write(json.dumps(config.to_dict(), indent=4))
+
+
+class CfgNode:
+    """ a lightweight configuration class inspired by yacs """
+
+    # TODO: convert to subclass from a dict like in yacs?
+    # TODO: implement freezing to prevent shooting of own foot
+    # TODO: additional existence/override checks when reading/writing params?
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __str__(self):
+        return self._str_helper(0)
+
+    def _str_helper(self, indent):
+        """ need to have a helper to support nested indentation for pretty printing """
+        parts = []
+        for k, v in self.__dict__.items():
+            if isinstance(v, CfgNode):
+                parts.append("%s:\n" % k)
+                parts.append(v._str_helper(indent + 1))
+            else:
+                parts.append("%s: %s\n" % (k, v))
+        parts = [' ' * (indent * 4) + p for p in parts]
+        return "".join(parts)
+
+    def to_dict(self):
+        """ return a dict representation of the config """
+        return {k: v.to_dict() if isinstance(v, CfgNode) else v for k, v in self.__dict__.items()}
+
+    def merge_from_dict(self, d):
+        self.__dict__.update(d)
+
+    def merge_from_args(self, args):
+        """
+        update the configuration from a list of strings that is expected
+        to come from the command line, i.e. sys.argv[1:].
+
+        The arguments are expected to be in the form of `--arg=value`, and
+        the arg can use . to denote nested sub-attributes. Example:
+
+        --model.n_layer=10 --trainer.batch_size=32
+        """
+        for arg in args:
+
+            keyval = arg.split('=')
+            assert len(keyval) == 2, "expecting each override arg to be of form --arg=value, got %s" % arg
+            key, val = keyval  # unpack
+
+            # first translate val into a python object
+            try:
+                val = literal_eval(val)
+                """
+                need some explanation here.
+                - if val is simply a string, literal_eval will throw a ValueError
+                - if val represents a thing (like an 3, 3.14, [1,2,3], False, None, etc.) it will get created
+                """
+            except ValueError:
+                pass
+
+            # find the appropriate object to insert the attribute into
+            assert key[:2] == '--'
+            key = key[2:]  # strip the '--'
+            keys = key.split('.')
+            obj = self
+            for k in keys[:-1]:
+                obj = getattr(obj, k)
+            leaf_key = keys[-1]
+
+            # ensure that this attribute exists
+            assert hasattr(obj, leaf_key), f"{key} is not an attribute that exists in the config"
+
+            # overwrite the attribute
+            print("command line overwriting config attribute %s with %s" % (key, val))
+            setattr(obj, leaf_key, val)
+
 
 class GPT(nn.Module):
-    def __init__(self, is_pretrain=False):
-        super(GPT, self).__init__()
+    @staticmethod
+    def get_default_config():
+        C = CfgNode()
+        C.model_type = 'gpt'
+        C.n_layer = None
+        C.n_head = None
+        C.n_embd = None
+        C.vocab_size = None
+        C.block_size = None
+        C.embd_pdrop = 0.1
+        C.resid_pdrop = 0.1
+        C.attn_pdrop = 0.1
+        C.weight_decay = 0.1
+        C.learning_rate = 5e-4
+        C.betas = (0.9, 0.999)
+        return C
 
-        self.pre = is_pretrain
+    def __init__(self, config):
+        super().__init__()
+        assert config.vocab_size is not None
+        assert config.block_size is not None
+        self.block_size = config.block_size
+
+        type_given = (config.model_type is not None)
+        params_given = (config.n_layer is not None and
+                        config.n_head is not None and
+                        config.n_embd is not None)
+        assert type_given ^ params_given
+        if type_given:
+            config.merge_from_dict({
+                                       'gpt2': dict(n_layer=12, n_head=12, n_embd=768),
+                                       'gpt2-medium': dict(n_layer=24, n_head=16, n_embd=1024),
+                                       'gpt2-large': dict(n_layer=36, n_head=20, n_embd=1280),
+                                       'gpt2-xl': dict(n_layer=48, n_head=25, n_embd=1600),
+                                       'openai-gpt': dict(n_layer=12, n_head=12, n_embd=768),
+                                       'gopher-44m': dict(n_layer=8, n_head=16, n_embd=512),
+                                       'gpt-mini': dict(n_layer=6, n_head=6, n_embd=192),
+                                       'gpt-micro': dict(n_layer=4, n_head=4, n_embd=128),
+                                       'gpt-nano': dict(n_layer=3, n_head=3, n_embd=48),
+                                   }[config.model_type])
 
         self.transformer = nn.ModuleDict(dict(
-            wte=nn.Embedding(50257, 768),
-            wpe=nn.Embedding(1024, 768),
-            drop=nn.Dropout(0.1),
-            h=nn.ModuleList([Block() for _ in range(12)]),
-            ln_f=nn.LayerNorm(768),
+            wte=nn.Embedding(config.vocab_size, config.n_embd),
+            wpe=nn.Embedding(config.block_size, config.n_embd),
+            drop=nn.Dropout(config.embd_pdrop),
+            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            ln_f=nn.LayerNorm(config.n_embd),
         ))
-        self.lm_head = nn.Linear(768, 50257, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        self.apply(self._init_weights)
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * 12))
+                torch.nn.init.normal_(p, mean=0.0,
+                                      std=0.02 / math.sqrt(2 * config.n_layer))
+
         n_params = sum(p.numel() for p in self.transformer.parameters())
         print("number of parameters: %.2fM" % (n_params / 1e6,))
 
-        if self.pre:
-            self.load_weights()
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
 
-    def load_weights(self):
-        gpt_origin = GPT2LMHeadModel.from_pretrained('gpt2')
-        state = gpt_origin.state_dict()
-        keys = [k for k in state if not k.endswith('attn.masked_bias')]
+    @classmethod
+    def from_pretrained(cls, model_type):
+        from transformers import GPT2LMHeadModel
+        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+        config = cls.get_default_config()
+        config.model_type = model_type
+        config.vocab_size = 50257
+        config.block_size = 1024
+        model = GPT(config)
+        sd = model.state_dict()
+
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        sd_hf = model_hf.state_dict()
+        keys = [k for k in sd_hf if not k.endswith('attn.masked_bias')]
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        model = GPT()
-        ret_state = model.state_dict()
-
+        assert len(keys) == len([k for k in sd if not k.endswith('.attn.bias')])
         for k in keys:
             if any(k.endswith(w) for w in transposed):
+                assert sd_hf[k].shape[::-1] == sd[k].shape
                 with torch.no_grad():
-                    ret_state[k].copy_(state[k].t())
+                    sd[k].copy_(sd_hf[k].t())
             else:
+                assert sd_hf[k].shape == sd[k].shape
                 with torch.no_grad():
-                    ret_state[k].copy_(state[k])
-        return model.load_state_dict(ret_state)
+                    sd[k].copy_(sd_hf[k])
+        model.load_state_dict(sd)
+        return model
 
+    def configure_optimizers(self, train_config):
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (torch.nn.Linear,)
+        blacklist_weight_modules = (nn.LayerNorm, nn.Embedding)
+        for mn, m in self.named_modules():
+            for pn, p in m.named_parameters():
+                fpn = '%s.%s' % (mn, pn) if mn else pn
+                if pn.endswith('bias'):
+                    no_decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
+                    decay.add(fpn)
+                elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
+                    no_decay.add(fpn)
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0
+        assert len(param_dict.keys() - union_params) == 0
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in sorted(list(decay))],
+             "weight_decay": train_config.weight_decay},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))],
+             "weight_decay": 0.0},
+        ]
+        optimizer = torch.optim.AdamW(
+            optim_groups,
+            lr=train_config.learning_rate,
+            betas=train_config.betas
+        )
+        return optimizer
 
-    def forward(self, x,y = None, pad_mask = None):
-        device = x.device
-        pos = torch.arange(0, x.shape[1], dtype=torch.long, device=device).unsqueeze(0)
-        tok_emb = self.transformer.wte(x)
+    def forward(self, idx, targets=None):
+        device = idx.device
+        b, t = idx.size()
+        assert t <= self.block_size
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)
+        tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block((x,pad_mask))
+            x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
         loss = None
-        if y is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
-
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1
+            )
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, max_length, temperature=1, do_sample=False, top_k=None, endoftext_id=50256):
-        """
-        Generate tokens with max_length padding.
-
-        Parameters:
-        - idx: Tensor of token indices (input sequence).
-        - max_new_tokens: Number of new tokens to generate.
-        - max_length: Fixed length for padding.
-        - temperature: Sampling temperature.
-        - do_sample: Whether to sample or take argmax.
-        - top_k: If set, limits sampling to top-k tokens.
-        - endoftext_id: Token ID indicating the end of text.
-        """
-        # Ensure input is padded to max_length
-        pad_token_id = tokenizer.pad_token_id
-        assert pad_token_id is not None, "Tokenizer must have a pad_token_id defined."
-
-        # Pad input idx to max_length
-        if idx.size(1) < max_length:
-            padding = torch.full((idx.size(0), max_length - idx.size(1)), pad_token_id, dtype=idx.dtype,
-                                 device=idx.device)
-            idx = torch.cat((idx, padding), dim=1)
-
-        # Track where new tokens start
-        start_idx = idx.size(1) - max_length
-
+    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None):
         for _ in range(max_new_tokens):
-            # Compute logits
-            logits, _ = self(idx)
-
-            # Only use logits for the last non-padding token
-            logits = logits[:, start_idx - 1, :] / temperature
-
-            # Apply top-k filtering if specified
+            idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
+            logits, _ = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, top_k)
-                logits[logits < v[:, [-1]]] = -float("Inf")
-
-            # Compute probabilities
+                logits[logits < v[:, [-1]]] = -float('Inf')
             probs = F.softmax(logits, dim=-1)
-
-            # Sample or take argmax
             if do_sample:
                 idx_next = torch.multinomial(probs, num_samples=1)
             else:
                 _, idx_next = torch.topk(probs, k=1, dim=-1)
-
-            # Add the next token to the sequence
-            idx[:, start_idx] = idx_next[:, 0]
-
-            # Increment start_idx for the next token
-            start_idx += 1
-
-            # Stop if end-of-text token is generated
-            if endoftext_id is not None and (idx_next == endoftext_id).any():
-                break
-
-
-        # Ensure output remains padded to max_length
-        if idx.size(1) < max_length:
-            padding = torch.full((idx.size(0), max_length - idx.size(1)), pad_token_id, dtype=idx.dtype,
-                                 device=idx.device)
-            idx = torch.cat((idx, padding), dim=1)
-
+            idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
 
 if __name__ == '__main__':
-    model = GPT(is_pretrain=True)
-
-    # 입력 문장
-    input_text = "hello gpt."
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # 토큰화
-    enc = tokenizer(
-        input_text,
-        max_length=1024,
-        padding='max_length',
-        truncation=True,
-        return_tensors='pt'
-    )
-
-    input_ids = enc['input_ids']
-
-    # 생성
-    output_ids = model.generate(input_ids, max_new_tokens=10, max_length=1024, temperature=0.8, do_sample=True)
-
-    # 디코딩
-    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    print("Generated text:", output_text)
+    model_config = GPT.get_default_config()
+    model_config.model_type = 'gpt2'
+    model_config.vocab_size = 50257
+    model_config.block_size = 1024
+    model = GPT(model_config).from_pretrained('gpt2')

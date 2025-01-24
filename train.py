@@ -10,50 +10,75 @@ class Trainer():
     def __init__(self, is_load, state_path=None):
         self.is_load = is_load
         self.state_path = state_path
+
+        # 데이터셋 / 로더
         self.step1_ds = general_dataset()
         self.step2_ds = RLHF_dataset()
-        self.step1_ld = DataLoader(self.step1_ds, batch_size=6, num_workers=10, prefetch_factor=20,
-                                   sampler=torch.utils.data.RandomSampler(self.step1_ds, replacement=True,
-                                                                          num_samples=10000))
-        self.step2_ld = DataLoader(self.step2_ds, batch_size=6,  num_workers=10, prefetch_factor=20,
-                                   sampler=torch.utils.data.RandomSampler(self.step2_ds, replacement=True,
-                                                                          num_samples=1000))
-        self.model = GPT(is_pretrain=True)
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=1e-5)
-        self.epoch = 100
+        self.step1_ld = DataLoader(
+            self.step1_ds, batch_size=4, num_workers=10, prefetch_factor=20,
+            sampler=torch.utils.data.RandomSampler(self.step1_ds, replacement=True, num_samples=5000)
+        )
+        self.step2_ld = DataLoader(
+            self.step2_ds, batch_size=4, num_workers=10, prefetch_factor=20,
+            sampler=torch.utils.data.RandomSampler(self.step2_ds, replacement=True, num_samples=1000)
+        )
+
+        model_config = GPT.get_default_config()
+        model_config.model_type = 'gpt2'
+        model_config.vocab_size = 50257
+        model_config.block_size = 1024
+        self.model = GPT(model_config).from_pretrained('gpt2')
+
+
+        self.optimizer = self.model.configure_optimizers(model_config)
+        self.max_iters = 5000
         self.vest_loss = float('inf')
         self.patient = 0
 
     def train(self):
+        # 체크포인트 로드
         if self.is_load:
-            self.model.load_state_dict(torch.load(self.state_path))
+            self.model.load_state_dict(torch.load('./model.pth'))
+
         self.model.train()
         self.model.to('cuda')
-        pbar = tqdm(range(self.epoch))
+        data_iter = iter(self.step1_ld)
+
+        pbar = tqdm(range(self.max_iters))
         for i in pbar:
-            loss_tmp = []
-            for x, y, pad_mask in self.step1_ld:
-                x = x.to('cuda')
-                y = y.to('cuda')
-                pad_mask = pad_mask.to('cuda')
-                _, loss = self.model(x, y, pad_mask=None)
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                loss_tmp.append(loss.item())
-            epo_loss = sum(loss_tmp) / len(loss_tmp)
-            if epo_loss < self.vest_loss:
-                self.vest_loss = epo_loss
+
+            try:
+                x, y, pad_mask = next(data_iter)
+            except StopIteration:
+                data_iter = iter(self.step1_ld)
+                x, y, pad_mask = next(data_iter)
+
+            x = x.to('cuda')
+            y = y.to('cuda')
+            pad_mask = pad_mask.to('cuda')
+
+            _, loss = self.model(x, y)
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.optimizer.step()
+
+
+            loss_val = loss.item()
+            print(loss_val)
+            pbar.set_postfix(loss=loss_val)
+
+            if loss_val < self.vest_loss:
+                self.vest_loss = loss_val
                 torch.save(self.model.state_dict(), './model.pth')
                 self.patient = 0
             else:
                 self.patient += 1
-            if self.patient > 5:
+
+            if self.patient > 500:
                 print("Early stopping due to no improvement.")
                 break
 
-            pbar.set_postfix(loss=epo_loss)
-            print(f'{i} : epo loss: {epo_loss:.4f}')
 if __name__ == '__main__':
     trainer = Trainer(is_load=False)
     trainer.train()
