@@ -37,12 +37,12 @@ class general_dataset(Dataset):
         ret = self.tokenizer(question + ' ' + answer, padding='max_length', truncation=True, max_length=1024,
                              return_tensors='pt')
         input_ids = ret['input_ids'].squeeze(0)
-        attention_mask = ret['attention_mask'].squeeze(0)
+        pad_mask = ret['attention_mask'].squeeze(0)
 
         labels = input_ids.clone()
         labels[:-1] = input_ids[1:]
         labels[-1] = self.tokenizer.eos_token_id
-        return input_ids.int(), labels
+        return input_ids.int(), labels, pad_mask
 
 
 class RLHF_dataset(Dataset):
@@ -62,7 +62,10 @@ class RLHF_dataset(Dataset):
         data = question + ' ' + answer
         ret = self.tokenizer(data, padding='max_length', truncation=True, max_length=1024, return_tensors='pt')
         input_ids = ret['input_ids'].squeeze(0)
+        pad_mask = ret['attention_mask'].squeeze(0)
         labels = input_ids.clone()
         labels[:-1] = input_ids[1:]
         labels[-1] = self.tokenizer.eos_token_id
-        return input_ids.int(), labels
+        return input_ids.int(), labels, pad_mask
+if __name__ == '__main__':
+    prepare_data1()
