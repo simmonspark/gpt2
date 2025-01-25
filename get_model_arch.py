@@ -7,7 +7,5 @@ model = GPT2LMHeadModel.from_pretrained('gpt2')
 input_size = (1, 1024)
 summary(model, input_size=input_size, dtypes=[torch.long],depth=20)
 print(model.state_dict().keys())
-state = model.state_dict()
-for i in state.keys():
-    print(i, state[i].size())
+
 

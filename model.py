@@ -346,3 +346,24 @@ if __name__ == '__main__':
     model_config.vocab_size = 50257
     model_config.block_size = 1024
     model = GPT(model_config).from_pretrained('gpt2')
+
+    # batch per 3~4G vram
+    from transformers import GPT2Tokenizer
+
+    prompt = "hello? "
+    model.to('cuda')
+    model.eval()
+
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    encoded_input = tokenizer(prompt, return_tensors='pt').to('cuda')
+
+    x1 = encoded_input['input_ids']
+
+    logits1, loss = model(x1)
+
+    # now draw the argmax samples from each
+    y1 = model.generate(x1, max_new_tokens=50, do_sample=False)[0]
+
+    out1 = tokenizer.decode(y1.cpu().squeeze())
+
+    print(out1)
