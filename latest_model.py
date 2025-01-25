@@ -288,7 +288,7 @@ if __name__ == '__main__':
     # batch per 3~4G vram
     from transformers import GPT2Tokenizer
     mode= model.load_state_dict(torch.load('model.pth',weights_only=True))
-    prompt = "동물 생명에 대해 "
+    prompt = "오늘 마라탕 어떻노? "
     model.to('cuda')
     model.eval()
 

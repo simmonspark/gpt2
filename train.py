@@ -19,7 +19,7 @@ class Trainer():
         )
         self.step2_ld = DataLoader(
             self.step2_ds, batch_size=4, num_workers=10, prefetch_factor=20,
-            sampler=torch.utils.data.RandomSampler(self.step2_ds, replacement=True, num_samples=1000)
+            sampler=torch.utils.data.RandomSampler(self.step2_ds, replacement=True, num_samples=100)
         )
 
         '''model_config = GPT.get_default_config()
@@ -38,7 +38,7 @@ class Trainer():
 
     def train(self):
         if self.is_load:
-            self.model.load_state_dict(torch.load('./model.pth'))
+            self.model.load_state_dict(torch.load('./model.pth',weights_only=True))
 
         self.model.train()
         self.model.to('cuda')
