@@ -11,3 +11,5 @@
 hugging face 의 모델을 분석한 후 직접 구현해서 weight까지 로딩
 
 pad mask도 구현했지만, loss가 nan이 뜨는 문제 발생. logical mask만 구현.
+
+고찰 : for문으로 돌려가며 weight를 custom 매핑 하는 것 보단, 귀찮더라고 keys만 따로 가져와서 1:1로 전부 매핑하는게 디버깅 관점에서 훨씬 효율적이다.
