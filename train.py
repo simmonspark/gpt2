@@ -44,7 +44,7 @@ class Trainer():
 
         self.model.train()
         self.model.to('cuda')
-        data_iter = iter(self.step1_ld)
+        data_iter = iter(self.step2_ld)
 
         pbar = tqdm(range(self.max_iters))
         for i in pbar:
@@ -52,7 +52,7 @@ class Trainer():
             try:
                 x, y, pad_mask = next(data_iter)
             except StopIteration:
-                data_iter = iter(self.step1_ld)
+                data_iter = iter(self.step2_ld)
                 x, y, pad_mask = next(data_iter)
 
             x = x.to('cuda')
