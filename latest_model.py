@@ -87,9 +87,9 @@ class MySelfAttention(nn.Module):
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.attention_mask[:, :, :T, :T] == 0, float('-inf'))
         if mask is not None:
-            assert mask.dim == 2
+            mask = mask.view(B, 1, T, 1)
             mask = mask.expand(B, 1, T, T)  # batch,head,seq,seq for attention energy
-            att = att.masked_fill(mask == 0, float('-inf'))
+            att = att.masked_fill(mask == 0, 1e-4)
         att = F.softmax(att, dim=-1)
         att = self.attention_drop1(att)
         y = att @ v
@@ -184,7 +184,7 @@ class GPT(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, pad_mask=None, temperature=1.0, do_sample=False, top_k=None):
+    def generate(self, idx, max_new_tokens, pad_mask=None, temperature=0.8, do_sample=False, top_k=None):
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.size(1) <= 1024 else idx[:, -1024:]
             logits, _ = self(idx_cond)
@@ -232,13 +232,13 @@ class GPT(nn.Module):
         assert len(param_dict.keys() - union_params) == 0
         optim_groups = [
             {"params": [param_dict[pn] for pn in sorted(list(decay))],
-             "weight_decay": 0.1},
+             "weight_decay": 0.01},
             {"params": [param_dict[pn] for pn in sorted(list(no_decay))],
              "weight_decay": 0.0},
         ]
         optimizer = torch.optim.AdamW(
             optim_groups,
-            lr=5e-5,
+            lr=5e-4,
             betas=[0.9, 0.999]
         )
         return optimizer
@@ -287,8 +287,8 @@ if __name__ == '__main__':
     model = GPT().load_hf_weight()
     # batch per 3~4G vram
     from transformers import GPT2Tokenizer
-    mode= model.load_state_dict(torch.load('model.pth',weights_only=True))
-    prompt = "오늘 마라탕 어떻노? "
+    #mode= model.load_state_dict(torch.load('model.pth',weights_only=True))
+    prompt = "Hello!!!!!!!!!!!!!!!!, my name is"
     model.to('cuda')
     model.eval()
 
@@ -301,7 +301,7 @@ if __name__ == '__main__':
     logits1, loss = model(x1)
 
     # now draw the argmax samples from each
-    y1 = model.generate(x1, max_new_tokens=100, do_sample=True)[0]
+    y1 = model.generate(x1, max_new_tokens=100, do_sample=False)[0]
 
     out1 = tokenizer.decode(y1.cpu().squeeze())
 

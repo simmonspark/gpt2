@@ -346,11 +346,12 @@ if __name__ == '__main__':
     model_config.vocab_size = 50257
     model_config.block_size = 1024
     model = GPT(model_config).from_pretrained('gpt2')
+    mode= model.load_state_dict(torch.load('model.pth',weights_only=True))
 
     # batch per 3~4G vram
     from transformers import GPT2Tokenizer
 
-    prompt = "hello? "
+    prompt = "오늘 마라탕 어떻노? "
     model.to('cuda')
     model.eval()
 
@@ -362,7 +363,7 @@ if __name__ == '__main__':
     logits1, loss = model(x1)
 
     # now draw the argmax samples from each
-    y1 = model.generate(x1, max_new_tokens=50, do_sample=False)[0]
+    y1 = model.generate(x1, max_new_tokens=200, do_sample=True)[0]
 
     out1 = tokenizer.decode(y1.cpu().squeeze())
 
