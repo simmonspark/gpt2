@@ -8,8 +8,8 @@
 
 코드의 generate부분 약 20줄을 제외하고 gpt의 도움 없이 gpt 구현하기 프로젝트
 
-hugging face 의 모델을 분석한 후 직접 구현해서 weight까지 로딩
+hugging face 의 모델을 분석한 후 직접 구현해서 weight까지 로딩(new imple 부분을 hugging face의 파일을 디버깅하며 직접 제작)
 
-pad mask도 구현했지만, loss가 nan이 뜨는 문제 발생. logical mask만 구현.
+causal_mask, pad_mask 또한 구현
 
-고찰 : for문으로 돌려가며 weight를 custom 매핑 하는 것 보단, 귀찮더라고 keys만 따로 가져와서 1:1로 전부 매핑하는게 디버깅 관점에서 훨씬 효율적이다.
+- 필자가 알기로는 encoder-decoder attention 없이 self-attention만 진행하는데, 코드를 보는 도중 flash attention이랑 cross attention이 존재함을 발견. 해당 부분은 향후 더 알아볼 예정
