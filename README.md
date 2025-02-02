@@ -13,3 +13,4 @@ hugging face 의 모델을 분석한 후 직접 구현해서 weight까지 로딩
 causal_mask, pad_mask 또한 구현
 
 - 필자가 알기로는 encoder-decoder attention 없이 self-attention만 진행하는데, 코드를 보는 도중 flash attention이랑 cross attention이 존재함을 발견. 해당 부분은 향후 더 알아볼 예정
+![스크린샷 2025-02-02 16-44-02](https://github.com/user-attachments/assets/52300a50-1b9f-45a9-891f-03c642a43cd5)
