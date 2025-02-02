@@ -227,7 +227,7 @@ def get_pretrained_model():
 
 if __name__ == "__main__":
     model = get_pretrained_model()
-    prompt = "너는 동물 인권에 대해 어떻게 생각해?"
+    prompt = "평소에 어떤 취미를 갖고 있니?"
     model.load_state_dict(torch.load('model.pth', weights_only=True))
     model.to('cuda')
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
